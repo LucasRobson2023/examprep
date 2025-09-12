@@ -1,4 +1,4 @@
-Flask==2.3.6
+Flask==3.1.1
 gunicorn==23.0.0
 azure-storage-blob==12.23.1
 python-multipart==0.0.18
