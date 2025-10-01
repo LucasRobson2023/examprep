@@ -47,12 +47,12 @@ with app.app_context():
             ("bob", "mypassword"),
             ("alice", "test123")
         ]
-        for username, pwd in default_users:
-            u = User(username=username)
-            u.set_password(pwd)
-            db.session.add(u)
-        db.session.commit()
-        print("✅ Default users added to database")
+    for username, pwd in default_users:
+        u = User(username=username)
+        u.set_password(pwd)
+        db.session.add(u)
+    db.session.commit()
+    print("✅ Default users added to database")
 
 # ---------------- Flask-Login Setup ----------------
 login_manager = LoginManager()
@@ -107,47 +107,13 @@ def login():
         username = request.form.get("username")
         password = request.form.get("password")
 
-        # VULNERABLE SQL INJECTION IMPLEMENTATION
-        # Using SQLAlchemy's text() with string concatenation - UNSAFE!
-        try:
-            from sqlalchemy import text
-            
-            # ⚠️ VULNERABLE CODE: Direct string concatenation in SQL
-            query = text(f"SELECT * FROM users WHERE username = '{username}' AND password_hash = '{generate_password_hash(password)}'")
-            
-            # Execute the vulnerable query
-            result = db.session.execute(query)
-            user_data = result.fetchone()
-            
-            if user_data:
-                # Convert result to User object
-                user = User.query.get(user_data[0])
-                if user:
-                    login_user(user)
-                    return redirect(url_for("serve_index"))
-            
-            return "Invalid credentials", 401
-            
-        except Exception as e:
-            return f"Database error: {str(e)}", 500
-
-    return send_from_directory(".", "login.html")
-
-@app.route("/secure-login", methods=["GET", "POST"])
-def secure_login():
-    """This is the secure version for comparison"""
-    if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
-
-        # ✅ SECURE: Using SQLAlchemy's proper parameterized queries
         user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
             login_user(user)
             return redirect(url_for("serve_index"))
         return "Invalid credentials", 401
 
-    return send_from_directory(".", "secure_login.html")
+    return send_from_directory(".", "login.html")
 
 @app.route("/logout")
 @login_required
