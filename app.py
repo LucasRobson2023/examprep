@@ -3,11 +3,13 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
-import os, time
 from azure.monitor.opentelemetry import configure_azure_monitor
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+import os, time
 
+# ---------------- App Insights ----------------
 APPINSIGHTS_CONNECTION_STRING = os.environ.get("APPINSIGHTS_CONNECTION_STRING")
-
 if APPINSIGHTS_CONNECTION_STRING:
     configure_azure_monitor(
         connection_string=APPINSIGHTS_CONNECTION_STRING,
@@ -19,25 +21,35 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 # 🔑 Flask session secret
 app.secret_key = os.environ.get("FLASK_SECRET", "supersecret")
 
+# ---------------- Database Setup (SQLite) ----------------
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+db = SQLAlchemy(app)
+
+class User(UserMixin, db.Model):
+    __tablename__ = "users"
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+# Create DB tables if not exist
+with app.app_context():
+    db.create_all()
+
 # ---------------- Flask-Login Setup ----------------
 login_manager = LoginManager()
 login_manager.login_view = "login"   # redirect to /login if not logged in
 login_manager.init_app(app)
 
-class User(UserMixin):
-    def __init__(self, id):
-        self.id = id
-
-VALID_USERS = {
-    "admin": "password123",   # ⚠️ Replace before production
-    "bob": "mypassword"
-}
-
 @login_manager.user_loader
 def load_user(user_id):
-    if user_id in VALID_USERS:
-        return User(user_id)
-    return None
+    return User.query.get(int(user_id))
 # ---------------------------------------------------
 
 # Env vars from App Service
@@ -83,8 +95,8 @@ def login():
         username = request.form.get("username")
         password = request.form.get("password")
 
-        if username in VALID_USERS and VALID_USERS[username] == password:
-            user = User(id=username)
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
             login_user(user)
             return redirect(url_for("serve_index"))
         return "Invalid credentials", 401
@@ -107,7 +119,7 @@ def upload_file():
 
         file = request.files["file"]
         container_client = get_container_client()
-        blob_name = f"{current_user.id}/{file.filename}"   # user-specific folder
+        blob_name = f"{current_user.username}/{file.filename}"   # user-specific folder
         blob_client = container_client.get_blob_client(blob_name)
         blob_client.upload_blob(file.read(), overwrite=True)
 
@@ -115,22 +127,20 @@ def upload_file():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/files", methods=["GET"])
 @login_required
 def list_files():
     container_client = get_container_client()
-    prefix = f"{current_user.id}/"
+    prefix = f"{current_user.username}/"
     blobs = container_client.list_blobs(name_starts_with=prefix)
     files = [blob.name.split("/", 1)[1] for blob in blobs]  # strip user prefix
     return jsonify(files)
-
 
 @app.route("/download/<filename>", methods=["GET"])
 @login_required
 def download_file(filename):
     container_client = get_container_client()
-    blob_client = container_client.get_blob_client(f"{current_user.id}/{filename}")
+    blob_client = container_client.get_blob_client(f"{current_user.username}/{filename}")
 
     if not blob_client.exists():
         return jsonify({"error": "File not found"}), 404
@@ -144,12 +154,11 @@ def download_file(filename):
         }
     )
 
-
 @app.route("/delete/<filename>", methods=["DELETE"])
 @login_required
 def delete_file(filename):
     container_client = get_container_client()
-    blob_client = container_client.get_blob_client(f"{current_user.id}/{filename}")
+    blob_client = container_client.get_blob_client(f"{current_user.username}/{filename}")
 
     if not blob_client.exists():
         return jsonify({"error": "File not found"}), 404
