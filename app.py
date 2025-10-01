@@ -41,6 +41,18 @@ class User(UserMixin, db.Model):
 # Create DB tables if not exist
 with app.app_context():
     db.create_all()
+    if User.query.count() == 0:
+        default_users = [
+            ("admin", "password123"),
+            ("bob", "mypassword"),
+            ("alice", "test123")
+        ]
+    for username, pwd in default_users:
+        u = User(username=username)
+        u.set_password(pwd)
+        db.session.add(u)
+    db.session.commit()
+    print("✅ Default users added to database")
 
 # ---------------- Flask-Login Setup ----------------
 login_manager = LoginManager()
