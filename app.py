@@ -4,6 +4,12 @@ from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 import os, time
+from azure.monitor.opentelemetry import configure_azure_monitor
+
+configure_azure_monitor(
+    connection_string=f"InstrumentationKey={azurerm_application_insights.webapp_ai.instrumentation_key}",
+    enable_live_metrics=True
+)
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
