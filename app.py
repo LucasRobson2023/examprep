@@ -1,5 +1,5 @@
-from flask import Flask, request, send_from_directory, jsonify, redirect, url_for
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user
+from flask import Flask, request, send_from_directory, jsonify, redirect, url_for, Response
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
@@ -20,7 +20,8 @@ class User(UserMixin):
         self.id = id
 
 VALID_USERS = {
-    "admin": "password123"   # ⚠️ Replace before production
+    "admin": "password123",   # ⚠️ Replace before production
+    "bob": "mypassword"
 }
 
 @login_manager.user_loader
@@ -79,7 +80,6 @@ def login():
             return redirect(url_for("serve_index"))
         return "Invalid credentials", 401
 
-    # 🔥 Serve login.html from root (same as index.html)
     return send_from_directory(".", "login.html")
 
 @app.route("/logout")
@@ -88,6 +88,7 @@ def logout():
     logout_user()
     return redirect(url_for("login"))
 
+# ---------------- File Routes ----------------
 @app.route("/upload/", methods=["POST"])
 @login_required
 def upload_file():
@@ -97,12 +98,55 @@ def upload_file():
 
         file = request.files["file"]
         container_client = get_container_client()
-        blob_client = container_client.get_blob_client(file.filename)
+        blob_name = f"{current_user.id}/{file.filename}"   # user-specific folder
+        blob_client = container_client.get_blob_client(blob_name)
         blob_client.upload_blob(file.read(), overwrite=True)
 
         return jsonify({"filename": file.filename, "status": "uploaded"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/files", methods=["GET"])
+@login_required
+def list_files():
+    container_client = get_container_client()
+    prefix = f"{current_user.id}/"
+    blobs = container_client.list_blobs(name_starts_with=prefix)
+    files = [blob.name.split("/", 1)[1] for blob in blobs]  # strip user prefix
+    return jsonify(files)
+
+
+@app.route("/download/<filename>", methods=["GET"])
+@login_required
+def download_file(filename):
+    container_client = get_container_client()
+    blob_client = container_client.get_blob_client(f"{current_user.id}/{filename}")
+
+    if not blob_client.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    stream = blob_client.download_blob()
+    return Response(
+        stream.readall(),
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "application/octet-stream"
+        }
+    )
+
+
+@app.route("/delete/<filename>", methods=["DELETE"])
+@login_required
+def delete_file(filename):
+    container_client = get_container_client()
+    blob_client = container_client.get_blob_client(f"{current_user.id}/{filename}")
+
+    if not blob_client.exists():
+        return jsonify({"error": "File not found"}), 404
+
+    blob_client.delete_blob()
+    return jsonify({"status": "deleted", "filename": filename})
 # ---------------------------------------------------
 
 if __name__ == "__main__":
