@@ -4,13 +4,46 @@
     <title>File Upload</title>
 </head>
 <body>
-    <h1>Upload a File</h1>
+    <h1>Welcome, you are logged in</h1>
+    <button onclick="window.location.href='/logout'">Logout</button>
+
+    <h2>Upload a File</h2>
     <input type="file" id="fileInput">
     <button onclick="uploadFile()">Upload</button>
-
     <p id="status"></p>
 
+    <h2>Your Files</h2>
+    <ul id="fileList"></ul>
+
     <script>
+        async function refreshFileList() {
+            const response = await fetch("/files");
+            const files = await response.json();
+            const fileList = document.getElementById("fileList");
+            fileList.innerHTML = "";
+            files.forEach(file => {
+                const li = document.createElement("li");
+                li.textContent = file + " ";
+
+                const dlBtn = document.createElement("button");
+                dlBtn.textContent = "Download";
+                dlBtn.onclick = () => {
+                    window.location.href = `/download/${file}`;
+                };
+
+                const delBtn = document.createElement("button");
+                delBtn.textContent = "Delete";
+                delBtn.onclick = async () => {
+                    await fetch(`/delete/${file}`, { method: "DELETE" });
+                    refreshFileList();
+                };
+
+                li.appendChild(dlBtn);
+                li.appendChild(delBtn);
+                fileList.appendChild(li);
+            });
+        }
+
         async function uploadFile() {
             const fileInput = document.getElementById('fileInput');
             const file = fileInput.files[0];
@@ -29,7 +62,11 @@
 
             const result = await response.json();
             document.getElementById('status').innerText = JSON.stringify(result);
+            refreshFileList();
         }
+
+        // Load files on page load
+        window.onload = refreshFileList;
     </script>
 </body>
 </html>
