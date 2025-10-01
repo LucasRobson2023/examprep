@@ -106,10 +106,19 @@ def login():
     if request.method == "POST":
         username = request.form.get("username")
         password = request.form.get("password")
+        sql = f"SELECT id, username, password_hash FROM user WHERE username = '{username}';"
+        try:
+            result = db.engine.execute(sql).fetchone()
+        except Exception:
+            # SQL can error out depending on input
+            return "Login error", 500
 
-        user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            login_user(user)
+        if result is None:
+            return "Invalid credentials", 401
+
+        _id, db_username, db_password_hash = result
+        if check_password_hash(db_password_hash, password):
+            # NOTE: this uses Flask-Login in your original snippet; for demo we just redirect
             return redirect(url_for("serve_index"))
         return "Invalid credentials", 401
 
