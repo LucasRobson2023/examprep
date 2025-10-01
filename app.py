@@ -4,9 +4,8 @@ from azure.storage.blob import BlobServiceClient
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.monitor.opentelemetry import configure_azure_monitor
-from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-import os, time
+import os, time, sqlite3
 
 # ---------------- App Insights ----------------
 APPINSIGHTS_CONNECTION_STRING = os.environ.get("APPINSIGHTS_CONNECTION_STRING")
@@ -21,47 +20,69 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 # 🔑 Flask session secret
 app.secret_key = os.environ.get("FLASK_SECRET", "supersecret")
 
-# ---------------- Database Setup (SQLite) ----------------
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-db = SQLAlchemy(app)
-
-class User(UserMixin, db.Model):
-    __tablename__ = "users"
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
-
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-# Create DB tables if not exist
-with app.app_context():
-    db.create_all()
-    if User.query.count() == 0:
+# ---------------- Database Setup (SQLite3) ----------------
+def init_db():
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    
+    # Create users table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+    ''')
+    
+    # Check if we need to add default users
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    
+    if count == 0:
         default_users = [
-            ("admin", "password123"),
-            ("bob", "mypassword"),
-            ("alice", "test123")
+            ("admin", generate_password_hash("password123")),
+            ("bob", generate_password_hash("mypassword")),
+            ("alice", generate_password_hash("test123"))
         ]
-    for username, pwd in default_users:
-        u = User(username=username)
-        u.set_password(pwd)
-        db.session.add(u)
-    db.session.commit()
-    print("✅ Default users added to database")
+        
+        cursor.executemany(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            default_users
+        )
+        print("✅ Default users added to database")
+    
+    conn.commit()
+    conn.close()
+
+# Initialize the database
+init_db()
 
 # ---------------- Flask-Login Setup ----------------
 login_manager = LoginManager()
 login_manager.login_view = "login"   # redirect to /login if not logged in
 login_manager.init_app(app)
 
+class User(UserMixin):
+    def __init__(self, id, username, password_hash):
+        self.id = id
+        self.username = username
+        self.password_hash = password_hash
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, username, password_hash FROM users WHERE id = ?", (user_id,))
+    user_data = cursor.fetchone()
+    conn.close()
+    
+    if user_data:
+        return User(user_data[0], user_data[1], user_data[2])
+    return None
+
 # ---------------------------------------------------
 
 # Env vars from App Service
@@ -107,10 +128,22 @@ def login():
         username = request.form.get("username")
         password = request.form.get("password")
 
-        user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            login_user(user)
-            return redirect(url_for("serve_index"))
+        # VULNERABLE SQL INJECTION - Direct string concatenation
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        
+        # This is vulnerable to SQL injection - username is directly concatenated
+        query = f"SELECT id, username, password_hash FROM users WHERE username = '{username}'"
+        cursor.execute(query)
+        user_data = cursor.fetchone()
+        conn.close()
+
+        if user_data:
+            user = User(user_data[0], user_data[1], user_data[2])
+            if user.check_password(password):
+                login_user(user)
+                return redirect(url_for("serve_index"))
+        
         return "Invalid credentials", 401
 
     return send_from_directory(".", "login.html")
