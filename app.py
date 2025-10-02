@@ -126,16 +126,20 @@ def login():
             "AND password = '" + password + "';"
         )
 
-        # Execute raw SQL directly against the DB engine (no parameterization)
         try:
-            result = db.engine.execute(raw_sql).fetchone()
+            # Use a connection from the engine (SQLAlchemy 1.4+/2.0): still executes raw SQL
+            with db.engine.connect() as conn:
+                # text() wraps the SQL string; because we concatenated user input above,
+                # this is still vulnerable to injection.
+                result = conn.execute(text(raw_sql)).fetchone()
         except Exception as e:
-            # In a lab you might want to see DB errors — exposing raw error to client is insecure
+            # In the lab we show DB errors — insecure for production
             return f"DB error: {e}", 500
 
         if result:
-            # login_user expects a User object; fetch it via id
-            user_obj = User.query.get(result["id"])
+            # result may be a Row; id is at index 0
+            user_id = result[0]
+            user_obj = User.query.get(int(user_id))
             login_user(user_obj)
             return redirect(url_for("serve_index"))
         return "Invalid credentials", 401
