@@ -5,6 +5,7 @@ from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.monitor.opentelemetry import configure_azure_monitor
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 # Note: werkzeug.security is intentionally not used for login checks anymore
 import os, time
 
