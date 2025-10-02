@@ -5,7 +5,7 @@ from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
 from azure.monitor.opentelemetry import configure_azure_monitor
 from flask_sqlalchemy import SQLAlchemy
-from werkzeug.security import generate_password_hash, check_password_hash
+# Note: werkzeug.security is intentionally not used for login checks anymore
 import os, time
 
 # ---------------- App Insights ----------------
@@ -18,7 +18,7 @@ if APPINSIGHTS_CONNECTION_STRING:
 
 app = Flask(__name__, static_folder=".", static_url_path="")
 
-# 🔑 Flask session secret
+# 🔑 Flask session secret (still present for the lab)
 app.secret_key = os.environ.get("FLASK_SECRET", "supersecret")
 
 # ---------------- Database Setup (SQLite) ----------------
@@ -26,19 +26,23 @@ app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///users.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
+# --- WARNING: The following model stores plaintext passwords (insecure) ---
 class User(UserMixin, db.Model):
     __tablename__ = "users"
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(200), nullable=False)
+    # Plaintext password column (insecure on purpose for the lab)
+    password = db.Column(db.String(200), nullable=False)
 
+    # intentionally insecure: store plaintext
     def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
+        self.password = password
 
+    # intentionally insecure: plaintext comparison
     def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+        return self.password == password
 
-# Create DB tables if not exist
+# Create DB tables if not exist and add default users (plaintext passwords)
 with app.app_context():
     db.create_all()
     if User.query.count() == 0:
@@ -47,16 +51,16 @@ with app.app_context():
             ("bob", "mypassword"),
             ("alice", "test123")
         ]
-    for username, pwd in default_users:
-        u = User(username=username)
-        u.set_password(pwd)
-        db.session.add(u)
-    db.session.commit()
-    print("✅ Default users added to database")
+        for username, pwd in default_users:
+            u = User(username=username)
+            u.set_password(pwd)
+            db.session.add(u)
+        db.session.commit()
+        print("✅ Default users (plaintext passwords) added to database")
 
 # ---------------- Flask-Login Setup ----------------
 login_manager = LoginManager()
-login_manager.login_view = "login"   # redirect to /login if not logged in
+login_manager.login_view = "login"
 login_manager.init_app(app)
 
 @login_manager.user_loader
@@ -64,10 +68,10 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 # ---------------------------------------------------
 
-# Env vars from App Service
-KEYVAULT_URL = os.environ["KEYVAULT_URL"]
+# Env vars from App Service (these are still used for the file backend)
+KEYVAULT_URL = os.environ.get("KEYVAULT_URL", "https://example.vault.azure.net/")  # fallback for lab
 SECRET_NAME = os.environ.get("SECRET_NAME", "storage-account-key1")
-STORAGE_ACCOUNT_NAME = os.environ["STORAGE_ACCOUNT_NAME"]
+STORAGE_ACCOUNT_NAME = os.environ.get("STORAGE_ACCOUNT_NAME", "examplestorage")
 CONTAINER_NAME = "webfiles"
 
 credential = DefaultAzureCredential()
@@ -104,12 +108,35 @@ def serve_index():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
+        # GET form data (vulnerable login below)
+        username = request.form.get("username", "")
+        password = request.form.get("password", "")
 
-        user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            login_user(user)
+        # ----------------------------
+        # VULNERABLE CODE: do not use in production
+        # Build SQL by concatenating raw user input (SQL injection vulnerable)
+        # Example vulnerable query result:
+        #   SELECT id, username FROM users WHERE username = '...'
+        #
+        # An attacker can inject SQL via the username or password fields.
+        # ----------------------------
+        raw_sql = (
+            "SELECT id, username FROM users "
+            "WHERE username = '" + username + "' "
+            "AND password = '" + password + "';"
+        )
+
+        # Execute raw SQL directly against the DB engine (no parameterization)
+        try:
+            result = db.engine.execute(raw_sql).fetchone()
+        except Exception as e:
+            # In a lab you might want to see DB errors — exposing raw error to client is insecure
+            return f"DB error: {e}", 500
+
+        if result:
+            # login_user expects a User object; fetch it via id
+            user_obj = User.query.get(result["id"])
+            login_user(user_obj)
             return redirect(url_for("serve_index"))
         return "Invalid credentials", 401
 
@@ -121,7 +148,7 @@ def logout():
     logout_user()
     return redirect(url_for("login"))
 
-# ---------------- File Routes ----------------
+# ---------------- File Routes (unchanged) ----------------
 @app.route("/upload/", methods=["POST"])
 @login_required
 def upload_file():
@@ -180,4 +207,5 @@ def delete_file(filename):
 # ---------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    # Run with debug=True in the lab so errors are shown (insecure for production)
+    app.run(host="0.0.0.0", port=8000, debug=True)
